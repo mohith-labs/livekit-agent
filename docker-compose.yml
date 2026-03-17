@@ -1,0 +1,24 @@
+services:
+  livekit-agent-ui:
+    build: .
+    container_name: livekit-agent-ui
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3001}:3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-password}
+      - JWT_SECRET=${JWT_SECRET:-livekit-agent-ui-jwt-secret-change-me}
+      - OPEN_AI_TOKEN_URL=${OPEN_AI_TOKEN_URL:-}
+      - LIVEKIT_URL=${LIVEKIT_URL:-}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-}
+    volumes:
+      - livekit-data:/app/data
+      - livekit-agents:/app/agent-runners
+
+volumes:
+  livekit-data:
+  livekit-agents:
