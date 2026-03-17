@@ -20,6 +20,8 @@ WORKDIR /app/backend
 
 COPY backend/package.json backend/package-lock.json* ./
 RUN npm ci || npm install
+# Install the musl-specific native binary for @livekit/rtc-node (Alpine uses musl)
+RUN npm install @livekit/rtc-node-linux-x64-musl --no-save 2>/dev/null || true
 
 COPY backend/ ./
 RUN npx nest build
