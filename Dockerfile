@@ -11,44 +11,44 @@ RUN npm run build
 
 
 # ── Stage 2: Build backend ──────────────────────────────────────────
-FROM node:22-alpine AS backend-build
+# Use Debian slim (glibc) — required by @livekit/rtc-node native binaries.
+# Alpine (musl) lacks prebuilt binaries for @livekit/rtc-node-linux-x64-musl.
+FROM node:22-slim AS backend-build
 
 # Install native build tools required by better-sqlite3
-RUN apk add --no-cache python3 make g++
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/backend
 
 COPY backend/package.json backend/package-lock.json* ./
 RUN npm ci || npm install
-# Install the musl-specific native binary for @livekit/rtc-node (Alpine uses musl)
-RUN npm install @livekit/rtc-node-linux-x64-musl --no-save 2>/dev/null || true
 
 COPY backend/ ./
 RUN npx nest build
 
 
 # ── Stage 3: Production image ───────────────────────────────────────
-FROM node:22-alpine AS production
+# Must also be Debian-based to match the glibc native binaries built above.
+FROM node:22-slim AS production
 
-RUN apk add --no-cache tini
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tini \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy backend build + node_modules
 COPY --from=backend-build /app/backend/dist ./dist
 COPY --from=backend-build /app/backend/node_modules ./node_modules
 COPY --from=backend-build /app/backend/package.json ./
 
-# Copy frontend build into backend's public dir
 COPY --from=frontend-build /app/frontend/dist ./public
 
-# Create directories for runtime data
 RUN mkdir -p data agent-runners
 
 ENV NODE_ENV=production
 ENV PORT=3001
 
-# Use tini as init to handle signals properly for child processes
-ENTRYPOINT ["/sbin/tini", "--"]
-
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "dist/main.js"]
