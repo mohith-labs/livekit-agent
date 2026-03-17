@@ -173,6 +173,14 @@ const { WorkerOptions, cli, defineAgent, llm, voice } = require('@livekit/agents
 const openai = require('@livekit/agents-plugin-openai');
 const https = require('https');
 
+// Prevent unhandled errors from crashing the process
+process.on('uncaughtException', (err) => {
+  console.error('[Agent] Uncaught exception (non-fatal):', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[Agent] Unhandled rejection (non-fatal):', reason);
+});
+
 const config = JSON.parse(process.env.AGENT_CONFIG || '{}');
 const OPEN_AI_TOKEN_URL = process.env.OPEN_AI_TOKEN_URL || '';
 
@@ -340,16 +348,30 @@ const agent = defineAgent({
     console.log('[Agent] Tools ready:', Object.keys(allTools).length);
 
     // 3. Create the realtime model with the per-session apiKey
-    // Use beta.RealtimeModel when apiKey is an ephemeral client secret (ek_ prefix),
-    // otherwise use the GA RealtimeModel.
+    // Ephemeral client secrets (ek_ prefix) require the beta RealtimeModel.
+    // Regular API keys (sk- prefix) use the GA RealtimeModel.
     const isBetaToken = apiKey.startsWith('ek_');
-    const ModelClass = isBetaToken ? openai.realtime.beta.RealtimeModel : openai.realtime.RealtimeModel;
-    console.log('[Agent] Using', isBetaToken ? 'beta' : 'GA', 'RealtimeModel');
+    const ModelClass = isBetaToken
+      ? openai.realtime.beta.RealtimeModel
+      : openai.realtime.RealtimeModel;
+
+    // For beta tokens, use a beta-compatible model name if the user picked a GA name
+    let modelName = config.openaiModel || 'gpt-4o-realtime-preview';
+    if (isBetaToken && modelName === 'gpt-realtime') {
+      modelName = 'gpt-4o-realtime-preview';
+    }
+
+    console.log('[Agent] Using', isBetaToken ? 'beta' : 'GA', 'RealtimeModel, model:', modelName);
 
     const model = new ModelClass({
-      model: config.openaiModel || 'gpt-4o-realtime-preview',
+      model: modelName,
       voice: config.voice || 'alloy',
       apiKey: apiKey,
+      connOptions: {
+        maxRetry: 3,
+        retryIntervalMs: 2000,
+        timeoutMs: 30000,
+      },
     });
 
     // 4. Create session + agent
@@ -360,14 +382,18 @@ const agent = defineAgent({
     });
 
     // 5. Connect and start
-    console.log('[Agent] Connecting to room...');
-    await ctx.connect();
-    console.log('[Agent] Connected. Starting session...');
+    try {
+      console.log('[Agent] Connecting to room...');
+      await ctx.connect();
+      console.log('[Agent] Connected. Starting session...');
 
-    await session.start({ agent: agentInstance, room: ctx.room });
+      await session.start({ agent: agentInstance, room: ctx.room });
 
-    console.log('[Agent] Session started. Generating initial greeting...');
-    session.generateReply({ instructions: 'Greet the user and offer your assistance.' });
+      console.log('[Agent] Session started. Generating initial greeting...');
+      session.generateReply({ instructions: 'Greet the user and offer your assistance.' });
+    } catch (err) {
+      console.error('[Agent] Failed to start session:', err.message || err);
+    }
   },
 });
 
