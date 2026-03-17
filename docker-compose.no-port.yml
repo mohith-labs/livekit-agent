@@ -1,7 +1,20 @@
 services:
-  livekit-agent-ui:
-    build: .
-    container_name: livekit-agent-ui
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: livekit-frontend
+    restart: unless-stopped
+    expose:
+      - "80"
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: livekit-backend
     restart: unless-stopped
     expose:
       - "3001"
