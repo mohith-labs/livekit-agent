@@ -1,10 +1,13 @@
 # ── Stage 1: Build backend ───────────────────────────────────────────
 FROM node:22-alpine AS build
 
+# Install native build tools required by better-sqlite3
+RUN apk add --no-cache python3 make g++
+
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-RUN npm ci --ignore-scripts 2>/dev/null || npm install
+RUN npm ci || npm install
 
 COPY . .
 RUN npx nest build
