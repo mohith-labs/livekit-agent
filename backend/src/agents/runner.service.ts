@@ -162,16 +162,23 @@ export class RunnerService implements OnModuleDestroy {
 
     const script = `
 // Auto-generated agent runner for: ${agent.name}
-// DO NOT EDIT - this file is regenerated on each agent start
+// DO NOT EDIT — regenerated on each agent start
+//
+// IMPORTANT: defineAgent + module.exports + cli.runApp are all TOP-LEVEL
+// and synchronous. The LiveKit framework requires the default export to
+// be available immediately when it imports this file.
+// All async work (token fetch, MCP, etc.) happens inside entry().
+
 const { WorkerOptions, cli, defineAgent, llm, voice } = require('@livekit/agents');
 const openai = require('@livekit/agents-plugin-openai');
 const https = require('https');
-const http = require('http');
 
 const config = JSON.parse(process.env.AGENT_CONFIG || '{}');
 const OPEN_AI_TOKEN_URL = process.env.OPEN_AI_TOKEN_URL || '';
 
-// ── Fetch a fresh short-lived OpenAI API key (called once per session) ──
+console.log('[Agent] Script loaded for agent:', config.name);
+
+// ── Helper: fetch a fresh short-lived OpenAI API key ──
 async function fetchOpenAIToken() {
   if (!OPEN_AI_TOKEN_URL) {
     throw new Error('OPEN_AI_TOKEN_URL is not configured');
@@ -194,15 +201,11 @@ ${hasWebSearch ? `
 // ── Web search tool implementation ──
 async function webSearch(query) {
   const apiKey = config.webSearchApiKey;
-
   if (apiKey) {
-    // Tavily API
     return new Promise((resolve) => {
       const data = JSON.stringify({ api_key: apiKey, query, max_results: 5 });
       const req = https.request({
-        hostname: 'api.tavily.com',
-        path: '/search',
-        method: 'POST',
+        hostname: 'api.tavily.com', path: '/search', method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       }, (res) => {
         let body = '';
@@ -210,8 +213,7 @@ async function webSearch(query) {
         res.on('end', () => {
           try {
             const result = JSON.parse(body);
-            const formatted = (result.results || []).map(r => r.title + ': ' + r.content).join('\\n\\n');
-            resolve(formatted || 'No results found.');
+            resolve((result.results || []).map(r => r.title + ': ' + r.content).join('\\n\\n') || 'No results found.');
           } catch { resolve('Search failed.'); }
         });
       });
@@ -220,7 +222,6 @@ async function webSearch(query) {
       req.end();
     });
   } else {
-    // DuckDuckGo Instant Answer API (free, no key)
     return new Promise((resolve) => {
       const url = 'https://api.duckduckgo.com/?q=' + encodeURIComponent(query) + '&format=json&no_html=1';
       https.get(url, (res) => {
@@ -228,13 +229,11 @@ async function webSearch(query) {
         res.on('data', (chunk) => body += chunk);
         res.on('end', () => {
           try {
-            const result = JSON.parse(body);
+            const r = JSON.parse(body);
             const parts = [];
-            if (result.Abstract) parts.push(result.Abstract);
-            if (result.Answer) parts.push(result.Answer);
-            if (result.RelatedTopics) {
-              result.RelatedTopics.slice(0, 5).forEach(t => { if (t.Text) parts.push(t.Text); });
-            }
+            if (r.Abstract) parts.push(r.Abstract);
+            if (r.Answer) parts.push(r.Answer);
+            if (r.RelatedTopics) r.RelatedTopics.slice(0, 5).forEach(t => { if (t.Text) parts.push(t.Text); });
             resolve(parts.join('\\n\\n') || 'No results found for: ' + query);
           } catch { resolve('Search failed.'); }
         });
@@ -253,34 +252,19 @@ const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/cli
 
 async function connectMcpServers(servers) {
   const tools = {};
-  const clients = [];
-
   for (const server of servers) {
     try {
       let transport;
       if (server.type === 'stdio') {
-        transport = new StdioClientTransport({
-          command: server.command,
-          args: server.args || [],
-          env: { ...process.env, ...(server.env || {}) },
-        });
+        transport = new StdioClientTransport({ command: server.command, args: server.args || [], env: { ...process.env, ...(server.env || {}) } });
       } else {
         const url = server.url;
-        if (url.endsWith('/sse')) {
-          transport = new SSEClientTransport(new URL(url), {
-            requestInit: { headers: server.headers || {} },
-          });
-        } else {
-          transport = new StreamableHTTPClientTransport(new URL(url), {
-            requestInit: { headers: server.headers || {} },
-          });
-        }
+        transport = url.endsWith('/sse')
+          ? new SSEClientTransport(new URL(url), { requestInit: { headers: server.headers || {} } })
+          : new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: server.headers || {} } });
       }
-
       const client = new Client({ name: 'livekit-agent-' + server.name, version: '1.0.0' }, {});
       await client.connect(transport);
-      clients.push(client);
-
       const toolList = await client.listTools();
       for (const tool of (toolList.tools || [])) {
         const toolName = server.name.replace(/[^a-zA-Z0-9_]/g, '_') + '__' + tool.name;
@@ -289,114 +273,96 @@ async function connectMcpServers(servers) {
           parameters: tool.inputSchema || {},
           execute: async (params) => {
             const result = await client.callTool({ name: tool.name, arguments: params });
-            if (result.content && result.content.length > 0) {
-              return result.content.map(c => c.text || JSON.stringify(c)).join('\\n');
-            }
+            if (result.content && result.content.length > 0) return result.content.map(c => c.text || JSON.stringify(c)).join('\\n');
             return JSON.stringify(result);
           },
         });
       }
-
       console.log('[MCP] Connected to ' + server.name + ', discovered ' + (toolList.tools || []).length + ' tools');
     } catch (err) {
       console.error('[MCP] Failed to connect to ' + server.name + ':', err.message);
     }
   }
-
-  return { tools, clients };
+  return tools;
 }
 ` : ''}
 
-// ── Build static tools (web search, MCP) once at startup ──
-async function buildTools() {
-  const allTools = {};
+// ──────────────────────────────────────────────────────────────────────
+// TOP-LEVEL: defineAgent — this is what the framework imports
+// ──────────────────────────────────────────────────────────────────────
+const agent = defineAgent({
+  entry: async (ctx) => {
+    console.log('[Agent] entry() called — new session for room:', ctx.room.name);
 
-  ${hasWebSearch ? `
-  const zod = require('zod');
-  allTools.web_search = llm.tool({
-    description: 'Search the internet for current information about any topic. Use this when the user asks about recent events, facts you are unsure about, or anything that requires up-to-date information.',
-    parameters: zod.z.object({
-      query: zod.z.string().describe('The search query to look up on the internet'),
-    }),
-    execute: async ({ query }) => {
-      console.log('[WebSearch] Searching for:', query);
-      return await webSearch(query);
-    },
-  });
-  ` : ''}
+    // 1. Fetch fresh short-lived OpenAI API key for THIS session
+    console.log('[Agent] Fetching fresh OpenAI token...');
+    const apiKey = await fetchOpenAIToken();
+    console.log('[Agent] Got OpenAI token, creating RealtimeModel...');
 
-  ${hasMcp ? `
-  const mcpResult = await connectMcpServers(config.mcpServers || []);
-  Object.assign(allTools, mcpResult.tools);
-  ` : ''}
+    // 2. Build tools (web search + MCP) — done per-session so MCP
+    //    connections are fresh and scoped to this session
+    const allTools = {};
+    ${hasWebSearch ? `
+    const zod = require('zod');
+    allTools.web_search = llm.tool({
+      description: 'Search the internet for current information about any topic. Use this when the user asks about recent events, facts you are unsure about, or anything that requires up-to-date information.',
+      parameters: zod.z.object({
+        query: zod.z.string().describe('The search query to look up on the internet'),
+      }),
+      execute: async ({ query }) => {
+        console.log('[WebSearch] Searching for:', query);
+        return await webSearch(query);
+      },
+    });
+    ` : ''}
+    ${hasMcp ? `
+    const mcpTools = await connectMcpServers(config.mcpServers || []);
+    Object.assign(allTools, mcpTools);
+    ` : ''}
+    console.log('[Agent] Tools ready:', Object.keys(allTools).length);
 
-  return allTools;
-}
+    // 3. Create the realtime model with the per-session apiKey
+    // Use beta.RealtimeModel when apiKey is an ephemeral client secret (ek_ prefix),
+    // otherwise use the GA RealtimeModel.
+    const isBetaToken = apiKey.startsWith('ek_');
+    const ModelClass = isBetaToken ? openai.realtime.beta.RealtimeModel : openai.realtime.RealtimeModel;
+    console.log('[Agent] Using', isBetaToken ? 'beta' : 'GA', 'RealtimeModel');
 
-// ── Main ──
-console.log('[Agent] Process started for agent:', config.name);
-console.log('[Agent] OPEN_AI_TOKEN_URL:', OPEN_AI_TOKEN_URL ? OPEN_AI_TOKEN_URL : '(not set)');
-console.log('[Agent] LIVEKIT_URL:', process.env.LIVEKIT_URL);
+    const model = new ModelClass({
+      model: config.openaiModel || 'gpt-4o-realtime-preview',
+      voice: config.voice || 'alloy',
+      apiKey: apiKey,
+    });
 
-async function main() {
-  const allTools = await buildTools();
-  console.log('[Agent] Tools built:', Object.keys(allTools).length, 'tools');
+    // 4. Create session + agent
+    const session = new voice.AgentSession({ llm: model });
+    const agentInstance = new voice.Agent({
+      instructions: config.instructions || 'You are a helpful voice AI assistant.',
+      tools: Object.keys(allTools).length > 0 ? allTools : undefined,
+    });
 
-  const agentDef = defineAgent({
-    entry: async (ctx) => {
-      console.log('[Agent] entry() called — new session starting for room:', ctx.room.name);
+    // 5. Connect and start
+    console.log('[Agent] Connecting to room...');
+    await ctx.connect();
+    console.log('[Agent] Connected. Starting session...');
 
-      // Fetch a fresh short-lived OpenAI API key for THIS session
-      console.log('[Agent] Fetching fresh OpenAI token...');
-      const apiKey = await fetchOpenAIToken();
-      console.log('[Agent] Got OpenAI token, creating RealtimeModel...');
+    await session.start({ agent: agentInstance, room: ctx.room });
 
-      const model = new openai.realtime.RealtimeModel({
-        model: config.openaiModel || 'gpt-4o-realtime-preview',
-        voice: config.voice || 'alloy',
-        apiKey: apiKey,
-      });
-      console.log('[Agent] RealtimeModel created with apiKey');
-
-      const session = new voice.AgentSession({
-        llm: model,
-      });
-
-      const agent = new voice.Agent({
-        instructions: config.instructions || 'You are a helpful voice AI assistant.',
-        tools: Object.keys(allTools).length > 0 ? allTools : undefined,
-      });
-
-      console.log('[Agent] Connecting to room...');
-      await ctx.connect();
-      console.log('[Agent] Connected. Starting session...');
-
-      await session.start({
-        agent,
-        room: ctx.room,
-      });
-
-      console.log('[Agent] Session started. Generating initial greeting...');
-      session.generateReply({
-        instructions: 'Greet the user and offer your assistance.',
-      });
-    },
-  });
-
-  module.exports = agentDef;
-  module.exports.default = agentDef;
-
-  console.log('[Agent] Registering with LiveKit via cli.runApp, agentName:', config.name);
-  cli.runApp(new WorkerOptions({
-    agent: __filename,
-    agentName: config.name,
-  }));
-}
-
-main().catch((err) => {
-  console.error('[Agent] Fatal error in main():', err);
-  process.exit(1);
+    console.log('[Agent] Session started. Generating initial greeting...');
+    session.generateReply({ instructions: 'Greet the user and offer your assistance.' });
+  },
 });
+
+// TOP-LEVEL: export the agent so the framework can find it
+module.exports = agent;
+module.exports.default = agent;
+
+// TOP-LEVEL: register with LiveKit
+console.log('[Agent] Registering worker, agentName:', config.name);
+cli.runApp(new WorkerOptions({
+  agent: __filename,
+  agentName: config.name,
+}));
 `;
 
     const scriptPath = path.join(this.templateDir, `agent-${agent.id}.js`);

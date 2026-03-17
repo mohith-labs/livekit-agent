@@ -12,11 +12,15 @@ import { AgentsService } from './agents.service';
 import { CreateAgentDto } from './dto/create-agent.dto';
 import { UpdateAgentDto } from './dto/update-agent.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { TokenService } from '../token/token.service';
 
 @Controller('agents')
 @UseGuards(JwtAuthGuard)
 export class AgentsController {
-  constructor(private agentsService: AgentsService) {}
+  constructor(
+    private agentsService: AgentsService,
+    private tokenService: TokenService,
+  ) {}
 
   @Get()
   findAll() {
@@ -51,5 +55,11 @@ export class AgentsController {
   @Post(':id/stop')
   stop(@Param('id') id: string) {
     return this.agentsService.stop(id);
+  }
+
+  @Post(':id/playground-token')
+  async playgroundToken(@Param('id') id: string) {
+    const agent = await this.agentsService.findOne(id);
+    return this.tokenService.generateToken(agent.name);
   }
 }
