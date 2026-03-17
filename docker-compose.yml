@@ -1,23 +1,10 @@
 services:
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: livekit-frontend
+  livekit-agent-ui:
+    build: .
+    container_name: livekit-agent-ui
     restart: unless-stopped
     ports:
-      - "${PORT:-80}:80"
-    depends_on:
-      - backend
-
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: livekit-backend
-    restart: unless-stopped
-    ports:
-      - "${BACKEND_PORT:-3001}:3001"
+      - "${PORT:-3001}:3001"
     environment:
       - NODE_ENV=production
       - PORT=3001
@@ -28,7 +15,6 @@ services:
       - LIVEKIT_URL=${LIVEKIT_URL:-}
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-}
-
     volumes:
       - livekit-data:/app/data
       - livekit-agents:/app/agent-runners
