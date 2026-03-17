@@ -178,23 +178,41 @@ const OPEN_AI_TOKEN_URL = process.env.OPEN_AI_TOKEN_URL || '';
 
 console.log('[Agent] Script loaded for agent:', config.name);
 
-// ── Helper: fetch a fresh short-lived OpenAI API key ──
-async function fetchOpenAIToken() {
+// ── Helper: fetch a fresh short-lived OpenAI API key (with retry) ──
+async function fetchOpenAIToken(retries = 3) {
   if (!OPEN_AI_TOKEN_URL) {
     throw new Error('OPEN_AI_TOKEN_URL is not configured');
   }
-  console.log('[Token] Fetching fresh OpenAI token from', OPEN_AI_TOKEN_URL);
-  const res = await fetch(OPEN_AI_TOKEN_URL);
-  if (!res.ok) {
-    throw new Error('Token endpoint returned ' + res.status);
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      console.log('[Token] Fetching fresh OpenAI token from', OPEN_AI_TOKEN_URL, '(attempt ' + attempt + ')');
+      const res = await fetch(OPEN_AI_TOKEN_URL);
+      const rawBody = await res.text();
+      if (!res.ok) {
+        throw new Error('Token endpoint returned HTTP ' + res.status + ': ' + rawBody);
+      }
+      if (!rawBody || rawBody.trim().length === 0) {
+        throw new Error('Token endpoint returned an empty response');
+      }
+      let data;
+      try {
+        data = JSON.parse(rawBody);
+      } catch (parseErr) {
+        throw new Error('Token endpoint returned invalid JSON: ' + rawBody.substring(0, 200));
+      }
+      const token = data.token;
+      if (!token) {
+        throw new Error('Token endpoint response missing "token" field: ' + rawBody.substring(0, 200));
+      }
+      console.log('[Token] Obtained fresh OpenAI token (' + token.substring(0, 8) + '...)');
+      return token;
+    } catch (err) {
+      console.error('[Token] Attempt ' + attempt + ' failed:', err.message);
+      if (attempt === retries) throw err;
+      // Wait before retry (500ms, 1000ms, ...)
+      await new Promise(r => setTimeout(r, attempt * 500));
+    }
   }
-  const data = await res.json();
-  const token = data.token;
-  if (!token) {
-    throw new Error('Token endpoint response missing "token" field');
-  }
-  console.log('[Token] Obtained fresh OpenAI token (' + token.substring(0, 8) + '...)');
-  return token;
 }
 
 ${hasWebSearch ? `
